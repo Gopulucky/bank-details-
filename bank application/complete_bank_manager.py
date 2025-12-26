@@ -7,9 +7,6 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import sqlite3
 import json
-import hashlib
-import secrets
-import os
 from datetime import datetime, timedelta
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -18,11 +15,9 @@ from openpyxl.utils import get_column_letter
 class CompleteDatabase:
     """Complete database with all features"""
     
-    def __init__(self, master_password=None):
+    def __init__(self, master_password):
         self.master_password = master_password
-        # Use absolute path relative to the script location
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.db_path = os.path.join(base_dir, 'complete_bank_manager.db')
+        self.db_path = 'complete_bank_manager.db'
         self._init_database()
     
     def _init_database(self):
@@ -30,14 +25,6 @@ class CompleteDatabase:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Create settings table for password hash
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        ''')
-
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bank_cards (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,59 +48,6 @@ class CompleteDatabase:
         conn.commit()
         conn.close()
     
-    def is_setup_complete(self):
-        """Check if master password is set"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('SELECT value FROM settings WHERE key = "password_hash"')
-        result = cursor.fetchone()
-        conn.close()
-        return result is not None
-
-    def set_master_password(self, password):
-        """Set master password"""
-        salt = secrets.token_hex(16)
-        # Use PBKDF2 with SHA256, 100,000 iterations
-        password_hash = hashlib.pbkdf2_hmac(
-            'sha256',
-            password.encode('utf-8'),
-            salt.encode('utf-8'),
-            100000
-        ).hex()
-        stored_value = f"{salt}:{password_hash}"
-
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-                      ("password_hash", stored_value))
-        conn.commit()
-        conn.close()
-        self.master_password = password
-
-    def check_master_password(self, password):
-        """Check if password is correct"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('SELECT value FROM settings WHERE key = "password_hash"')
-        result = cursor.fetchone()
-        conn.close()
-
-        if not result:
-            return False
-
-        salt, stored_hash = result[0].split(':')
-        calculated_hash = hashlib.pbkdf2_hmac(
-            'sha256',
-            password.encode('utf-8'),
-            salt.encode('utf-8'),
-            100000
-        ).hex()
-
-        if calculated_hash == stored_hash:
-            self.master_password = password
-            return True
-        return False
-
     def mask_card_number(self, card_number):
         """Mask card number"""
         if len(card_number) >= 16:
@@ -489,31 +423,17 @@ class LoginWindow:
         title = tk.Label(self.root, text="Complete Bank Manager", font=("Arial", 16, "bold"))
         title.pack(pady=20)
         
-        # Check if password is set
-        self.database = CompleteDatabase()
-        self.is_setup = self.database.is_setup_complete()
-
         # Password frame
         password_frame = ttk.Frame(self.root)
         password_frame.pack(pady=20)
         
-        if not self.is_setup:
-            info_label = tk.Label(password_frame, text="Welcome! Please set a master password.\n(Minimum 8 characters)",
-                                fg="blue", justify="center")
-            info_label.pack(pady=5)
-            btn_text = "Set Password & Login"
-            lbl_text = "Set Master Password:"
-        else:
-            btn_text = "Login"
-            lbl_text = "Master Password:"
-
-        ttk.Label(password_frame, text=lbl_text).pack()
+        ttk.Label(password_frame, text="Master Password:").pack()
         self.password_entry = ttk.Entry(password_frame, show="*", width=30)
         self.password_entry.pack(pady=5)
         self.password_entry.focus()
         
         # Login button
-        login_btn = ttk.Button(password_frame, text=btn_text, command=self.login)
+        login_btn = ttk.Button(password_frame, text="Login", command=self.login)
         login_btn.pack(pady=10)
         
         # Bind Enter key
@@ -528,16 +448,9 @@ class LoginWindow:
             return
         
         try:
-            if not self.is_setup:
-                self.database.set_master_password(password)
-                self.root.destroy()
-                self.show_main_window()
-            else:
-                if self.database.check_master_password(password):
-                    self.root.destroy()
-                    self.show_main_window()
-                else:
-                    messagebox.showerror("Error", "Invalid password!")
+            self.database = CompleteDatabase(password)
+            self.root.destroy()
+            self.show_main_window()
         except Exception as e:
             messagebox.showerror("Error", f"Login failed: {e}")
     
