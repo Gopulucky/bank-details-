@@ -4,8 +4,20 @@
 
 Follow these steps to set up and run the application from scratch.
 
-### **1. Clone the Repository**
-Open your terminal or command prompt and run:
+### **1. Get the Application**
+
+**Option A: Download ZIP (No Git required)**
+1.  Click the green **"Code"** button at the top of the repository page.
+2.  Select **"Download ZIP"**.
+3.  Extract (Unzip) the downloaded file to a folder on your computer.
+4.  Open your terminal (Command Prompt) and navigate to that folder:
+    ```bash
+    cd "path\to\extracted\folder"
+    ```
+    *(Tip: You can copy the path from the file explorer address bar)*
+
+**Option B: Using Git**
+Open your terminal and run:
 ```bash
 git clone <repository_url>
 cd <repository_directory>
