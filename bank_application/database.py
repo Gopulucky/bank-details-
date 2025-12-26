@@ -1,8 +1,13 @@
 import sqlite3
+import json
 import hashlib
 import secrets
 import os
+import base64
 from datetime import datetime
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 class CompleteDatabase:
     """Complete database with all features"""
@@ -103,6 +108,55 @@ class CompleteDatabase:
             return True
         return False
 
+    def _get_encryption_key(self) -> bytes:
+        """Derive encryption key from master password"""
+        if not self.master_password:
+            raise ValueError("Master password not set or logged in")
+
+        # We need a consistent salt for the encryption key.
+        # Ideally stored in DB, but for now we'll use the password hash's salt if available,
+        # or a fixed system salt if we want to separate auth from encryption (better).
+        # However, to avoid schema changes for a new 'encryption_salt', we'll read the auth salt.
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM settings WHERE key = "password_hash"')
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result:
+             raise ValueError("Setup not complete")
+
+        salt_hex = result[0].split(':')[0]
+        salt = salt_hex.encode('utf-8') # Using the hex string as bytes for KDF salt
+
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(self.master_password.encode()))
+        return key
+
+    def encrypt_data(self, data: str) -> str:
+        """Encrypt string data"""
+        if not data:
+            return ""
+        f = Fernet(self._get_encryption_key())
+        return f.encrypt(data.encode()).decode()
+
+    def decrypt_data(self, encrypted_data: str) -> str:
+        """Decrypt string data"""
+        if not encrypted_data:
+            return ""
+        try:
+            f = Fernet(self._get_encryption_key())
+            return f.decrypt(encrypted_data.encode()).decode()
+        except Exception:
+            # Fallback for legacy plain text data if migration happened
+            return encrypted_data
+
     def mask_card_number(self, card_number: str) -> str:
         """Mask card number"""
         if len(card_number) >= 16:
@@ -123,6 +177,12 @@ class CompleteDatabase:
 
         now = datetime.now().isoformat()
 
+        # Encrypt sensitive fields
+        enc_account = self.encrypt_data(account_number)
+        enc_atm = self.encrypt_data(atm_number)
+        enc_pin = self.encrypt_data(pin)
+        enc_cvv = self.encrypt_data(cvv)
+
         cursor.execute('''
             INSERT INTO bank_cards
             (bank_name, branch_name, ifsc_code, account_number, atm_number, pin,
@@ -130,8 +190,8 @@ class CompleteDatabase:
              family_member, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            bank_name, branch_name, ifsc_code, account_number, atm_number, pin,
-            validity_start, validity_end, cvv, card_type, card_network,
+            bank_name, branch_name, ifsc_code, enc_account, enc_atm, enc_pin,
+            validity_start, validity_end, enc_cvv, card_type, card_network,
             family_member, now, now
         ))
 
@@ -155,17 +215,23 @@ class CompleteDatabase:
 
         cards = []
         for row in cursor.fetchall():
+            # Decrypt fields first
+            dec_account = self.decrypt_data(row[4])
+            dec_atm = self.decrypt_data(row[5])
+            dec_pin = self.decrypt_data(row[6])
+            dec_cvv = self.decrypt_data(row[9])
+
             card_data = {
                 'id': row[0],
                 'bank_name': row[1],
                 'branch_name': row[2],
                 'ifsc_code': row[3],
-                'account_number': self.mask_card_number(row[4]),
-                'atm_number': self.mask_card_number(row[5]),
-                'pin': self.mask_cvv(row[6]),
+                'account_number': self.mask_card_number(dec_account),
+                'atm_number': self.mask_card_number(dec_atm),
+                'pin': self.mask_cvv(dec_pin),
                 'validity_start': row[7],
                 'validity_end': row[8],
-                'cvv': self.mask_cvv(row[9]),
+                'cvv': self.mask_cvv(dec_cvv),
                 'card_type': row[10],
                 'card_network': row[11],
                 'family_member': row[12],
@@ -198,12 +264,12 @@ class CompleteDatabase:
                 'bank_name': row[1],
                 'branch_name': row[2],
                 'ifsc_code': row[3],
-                'account_number': row[4],
-                'atm_number': row[5],
-                'pin': row[6],
+                'account_number': self.decrypt_data(row[4]),
+                'atm_number': self.decrypt_data(row[5]),
+                'pin': self.decrypt_data(row[6]),
                 'validity_start': row[7],
                 'validity_end': row[8],
-                'cvv': row[9],
+                'cvv': self.decrypt_data(row[9]),
                 'card_type': row[10],
                 'card_network': row[11],
                 'family_member': row[12],
@@ -221,6 +287,12 @@ class CompleteDatabase:
 
         now = datetime.now().isoformat()
 
+        # Encrypt sensitive fields
+        enc_account = self.encrypt_data(account_number)
+        enc_atm = self.encrypt_data(atm_number)
+        enc_pin = self.encrypt_data(pin)
+        enc_cvv = self.encrypt_data(cvv)
+
         cursor.execute('''
             UPDATE bank_cards
             SET bank_name=?, branch_name=?, ifsc_code=?, account_number=?, atm_number=?,
@@ -228,8 +300,8 @@ class CompleteDatabase:
                 card_network=?, family_member=?, updated_at=?
             WHERE id=?
         ''', (
-            bank_name, branch_name, ifsc_code, account_number, atm_number, pin,
-            validity_start, validity_end, cvv, card_type, card_network,
+            bank_name, branch_name, ifsc_code, enc_account, enc_atm, enc_pin,
+            validity_start, validity_end, enc_cvv, card_type, card_network,
             family_member, now, card_id
         ))
 
@@ -260,17 +332,23 @@ class CompleteDatabase:
 
         cards = []
         for row in cursor.fetchall():
+            # Decrypt fields
+            dec_account = self.decrypt_data(row[4])
+            dec_atm = self.decrypt_data(row[5])
+            dec_pin = self.decrypt_data(row[6])
+            dec_cvv = self.decrypt_data(row[9])
+
             card_data = {
                 'id': row[0],
                 'bank_name': row[1],
                 'branch_name': row[2],
                 'ifsc_code': row[3],
-                'account_number': row[4],  # Unmasked
-                'atm_number': row[5],      # Unmasked
-                'pin': row[6],             # Unmasked
+                'account_number': dec_account,  # Unmasked
+                'atm_number': dec_atm,      # Unmasked
+                'pin': dec_pin,             # Unmasked
                 'validity_start': row[7],
                 'validity_end': row[8],
-                'cvv': row[9],             # Unmasked
+                'cvv': dec_cvv,             # Unmasked
                 'card_type': row[10],
                 'card_network': row[11],
                 'family_member': row[12],
